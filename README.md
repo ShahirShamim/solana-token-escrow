@@ -1,113 +1,168 @@
-# Solana Yield Vibe - Staking Simulator
+# Solana Yield Vibe — On-Chain Staking Simulator
 
-A local staking simulator with a simulated Python backend and a React Vite + TypeScript + TailwindCSS v4 frontend. This project simulates yield staking metrics, user dashboards, staking transactions, and real-time unclaimed reward accumulation.
+A fully on-chain token staking simulator running against a local Solana Test
+Validator. An [Anchor](https://www.anchor-lang.com/) program implements the
+staking pool; a React + Vite + TypeScript dashboard talks to it directly through
+`@coral-xyz/anchor` and `@solana/web3.js`. No mocks — every stake, claim, and
+unstake is a real transaction signed and confirmed on the local ledger.
 
----
-
-## AI PM Vision & Prototype Experiment
-
-This repository was created as an experiment by an **AI Product Manager** to test **how rapidly AI can scaffold and develop functioning Web3 prototypes** to enable and accelerate development teams in the future. 
-
-By utilizing simulated ledger API loops alongside actual SBF smart contracts, we bypassed complex OS-specific toolchain bottlenecks to successfully create a fully interactive, real-time staking dashboard prototype in minutes.
-
----
-
-## What is Left to Build for Production
-
-To take this prototype from local simulation to a live production Solana DApp, the following steps are required:
-
-1. **On-Chain Wallet Integration**:
-   - Swap out the simulated local storage wallet system in `app/src/App.tsx` for a standard Solana Wallet Adapter (`@solana/wallet-adapter-react`).
-   - Hook up the wallet provider to allow real user wallets (like Phantom or Solflare) to sign transactions.
-2. **Live Solana Devnet/Mainnet Deploy**:
-   - Boot a devnet connection instead of connecting to `localhost`.
-   - Deploy the compiled SBF contract (`target/deploy/solana_yield_vibe.so`) using `solana program deploy` or `anchor deploy`.
-   - Setup a script to transfer the `mint_authority` of the reward mint to the newly deployed Program PoolState PDA address on-chain.
-3. **Upgrade Anchor to v0.31.1+**:
-   - Upgrade the Anchor CLI and package dependencies to `0.31.1` or later. This officially patches the dependency version conflicts in `proc-macro2` (which currently require compiling with `--no-idl` on macOS).
-4. **On-Chain Yield Testing**:
-   - Run the Mocha test suite (`tests/solana-yield-vibe.ts`) against a live devnet connection to verify transaction cost overhead and performance.
-
----
-
-## Project Architecture
-
-```mermaid
-graph TD
-    User([User Browser]) -->|HTTP REST| PythonBackend[Python Simulator Backend:8899]
-    User -->|Local State| ReactFrontend[React Vite App:5173]
-    ReactFrontend -->|UI Control| User
-    
-    subgraph Rust Backend
-        AnchorProg[Anchor Smart Contract]
-        RustTests[Mocha Integration Tests]
-    end
+```
+┌──────────────┐   web3.js / Anchor   ┌──────────────────────┐
+│  React app   │ ───────────────────▶ │ solana-test-validator │
+│  (app/:5173) │                       │      (:8899)         │
+└──────────────┘                       │  solana_yield_vibe    │
+                                       │  (Anchor program)     │
+                                       └──────────────────────┘
 ```
 
 ---
 
-## macOS Development Challenges & Ubuntu Migration
+## What it does
 
-During development on macOS, two primary issues arose:
-1. **Unstable Rust Compiler APIs (`proc-macro2`)**: 
-   Anchor `0.30.1` relies on unstable internal APIs (like `Span::source_file`) that were modified in newer releases of `proc-macro2` (v1.0.95+). This creates a dependency resolution conflict between the host compiler (Rust `1.96.0`) and the Solana SBF toolchain (Rust `1.75.0-dev`).
-2. **macOS AppleDouble Files (`._genesis.bin`)**: 
-   When running `solana-test-validator` on mounted macOS volumes (`/Volumes/Data/`), macOS default BSD `tar` automatically injects hidden metadata files prefixed with `._`. The Solana validator’s ledger unpacker fails with:
-   `Archive error: extra entry found: "._genesis.bin" Regular`
-   
-### Ubuntu Migration Path (What to Try on Ubuntu)
-These issues are unique to macOS filesystem metadata and BSD-style tools. When deploying or developing on **Ubuntu/Linux**, you can run the live blockchain validator seamlessly:
-- **No AppleDouble Files**: Ubuntu filesystems (like ext4) do not generate dot-underbar metadata files, avoiding the validator crash.
-- **Native GNU Tar**: Ubuntu packages native GNU `tar` by default, allowing the ledger to unpack cleanly.
-- **Consistent Compiler Toolchains**: Package managers on Linux align easily with Solana's target Rust environments.
+| Instruction        | Effect                                                                 |
+| ------------------ | ---------------------------------------------------------------------- |
+| `initialize_pool`  | Creates the `PoolState` PDA + staking vault (ATA owned by the pool).    |
+| `stake`            | Transfers STAKE tokens user → vault; accrues pending yield first.       |
+| `claim`            | Mints accrued REWARD tokens to the user; resets the accumulator.        |
+| `unstake`          | Accrues yield, then transfers STAKE tokens vault → user.                |
+
+**Yield formula** (computed from the on-chain Clock, overflow-checked):
+
+```
+yield = staked_balance × reward_rate × (now − last_stake_ts) / 1_000_000
+```
+
+State is held in two PDAs: `PoolState` (seeds `["pool"]`) and `UserState`
+(seeds `["user_state", pool, user]`). The reward mint's authority is the
+`PoolState` PDA, so the program itself signs the reward `mint_to` CPI.
 
 ---
 
-## How to Run the Simulator (macOS & Development)
+## Prerequisites
 
-### 1. Start the Python Simulator Backend
-The Python backend simulates the Solana staking program logic (including real-time yield accumulation, minting reward tokens, and staking vaults) on port `8899`. It runs using Python's standard library with zero external dependencies.
+Verified working with:
+
+| Tool        | Version           |
+| ----------- | ----------------- |
+| Solana CLI  | 1.18.17 (Agave)   |
+| Anchor CLI  | 0.30.1            |
+| Rust        | 1.96.0 (host)     |
+| Node        | 26.x              |
+
+> **macOS note.** Always prefix validator/test commands with
+> `COPYFILE_DISABLE=1`. macOS injects AppleDouble (`._*`) metadata into the
+> genesis archive, and the validator's ledger unpacker rejects it with
+> `Archive error: extra entry found: "._genesis.bin"`. Setting
+> `COPYFILE_DISABLE=1` stops `tar` from creating those entries and the validator
+> starts cleanly — no Linux VM required.
+
+Install JS deps once:
 
 ```bash
-python3 backend/server.py
+npm install            # repo root (tests + scripts)
+cd app && npm install  # frontend
 ```
-
-### 2. Start the React Frontend
-Navigate to the `/app` folder, install the Vite dependencies, and start the development server.
-
-```bash
-cd app
-npm install
-npm run dev
-```
-
-Open your browser at the local URL (usually [http://localhost:5173](http://localhost:5173)) to interact with the dashboard:
-- Use the **Airdrop Faucet** to fund your simulated wallet with `1,000 SOL` and `1,000,000 STAKE` tokens.
-- **Initialize the Pool** (admin action) with a reward rate.
-- **Stake** your principal and watch your reward balance tick up in real time!
-- **Claim** your simulated yield or **Unstake** your principal at any time.
 
 ---
 
-## How to Run the Live Solana Validator & Program (Ubuntu)
+## Quick start
 
-On an Ubuntu machine, you can run the actual Rust/Anchor program on a local validator using the following commands:
+Open two terminals from the repo root.
 
-### 1. Build the Solana Program
+**Terminal 1 — local validator with the program loaded:**
+
 ```bash
-anchor build
+COPYFILE_DISABLE=1 solana-test-validator --reset \
+  --bpf-program CrCv1oVV3Ft2S2G1WjtjAyyXwG41YGMvFbYxeLmQ8yx6 \
+  target/deploy/solana_yield_vibe.so
 ```
 
-### 2. Run the Local Validator & Deploy
-To spin up a local validator and deploy the contract in one command, run:
+**Terminal 2 — seed the ledger, then run the dashboard:**
+
 ```bash
-solana-test-validator --reset
-# In a separate terminal, deploy the program:
-anchor deploy
+npm run setup          # airdrop SOL, create mints, mint 1,000,000 STAKE, write app config
+cd app && npm run dev  # http://localhost:5173
 ```
 
-### 3. Run Integration Tests
-Run the Mocha TypeScript integration tests (`tests/solana-yield-vibe.ts`) validating the full `Stake -> Wait -> Claim -> Unstake` lifecycle:
+In the browser:
+
+1. **Initialize Staking Pool** (sets the reward rate).
+2. **Stake** STAKE tokens and watch unclaimed yield tick up in real time.
+3. **Claim** reward tokens, or **Unstake** your principal at any time.
+
+`npm run setup` (→ `scripts/setup_local_env.ts`) writes `app/src/localnet.json`
+(RPC URL, program ID, mint addresses, and a throwaway browser wallet keypair)
+and copies the IDL into `app/src/idl/`. Both are gitignored and regenerated each
+run. Restart the validator with `--reset` before re-running setup.
+
+---
+
+## Running the on-chain tests
+
+The Mocha suite exercises the full lifecycle (Initialize → Stake → wait → Claim
+→ Unstake) against a validator that Anchor spins up automatically:
+
 ```bash
-anchor test
+COPYFILE_DISABLE=1 anchor test --skip-build
 ```
+
+From a clean checkout (empty `target/`), build the program and seed the IDL
+first:
+
+```bash
+COPYFILE_DISABLE=1 anchor build --no-idl   # compiles target/deploy/*.so
+npm run idl:sync                            # idl/ → target/idl + target/types
+COPYFILE_DISABLE=1 anchor test --skip-build
+```
+
+---
+
+## Building the program
+
+```bash
+COPYFILE_DISABLE=1 anchor build --no-idl
+```
+
+The `--no-idl` flag is required: Anchor 0.30.1's IDL generator calls
+`proc_macro2::Span::source_file()`, a nightly API that was removed from modern
+`rustc`, so the IDL build step fails on this toolchain. The program binary itself
+compiles fine. A correct, hand-verified IDL (and its TypeScript types) is checked
+in under [`idl/`](./idl) and is the single source of truth used by both the tests
+and the frontend; `npm run idl:sync` copies it into `target/`. Upgrading to
+Anchor ≥ 0.31 would restore native IDL generation.
+
+---
+
+## Project structure
+
+```
+programs/solana-yield-vibe/src/lib.rs   Anchor program (state, instructions, yield math)
+tests/solana-yield-vibe.ts              Mocha integration test (full user flow)
+scripts/setup_local_env.ts              Local ledger bootstrap (airdrop, mints, config)
+idl/                                    Canonical IDL + TS types (checked in)
+app/                                    React + Vite + Tailwind dashboard
+  src/anchorClient.ts                   Connection + provider + program + local wallet
+  src/config.ts                         Loads generated localnet.json / IDL
+  src/App.tsx                           PoolMetrics, UserDashboard, ActionPanel
+Anchor.toml                             Localnet config + test runner
+```
+
+---
+
+## Toolchain fixes applied
+
+This project targets a current macOS + Node 26 environment, which required three
+fixes beyond the original scaffold:
+
+1. **Validator on macOS** — `COPYFILE_DISABLE=1` avoids the AppleDouble
+   `._genesis.bin` ledger-unpack failure (see note above).
+2. **Test runner on Node 26** — the original `ts-mocha` + `mocha@9` + `yargs@16`
+   stack throws `require is not defined in ES module scope` on Node 26. Replaced
+   with `mocha@11` + [`tsx`](https://tsx.is) (`Anchor.toml` `[scripts] test`).
+3. **IDL generation** — incompatible with `rustc` 1.96 (see "Building the
+   program"); the IDL is maintained in `idl/` and synced into `target/`.
+
+The frontend uses a local in-memory wallet keypair (generated by the setup
+script) to sign transactions. To target Phantom/Solflare on devnet instead, swap
+`src/anchorClient.ts`'s `LocalWallet` for `@solana/wallet-adapter-react` and point
+the RPC URL at your cluster.
